@@ -1,0 +1,55 @@
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+kartoza-pg-ai
+
+# Build
+release/
+dist/
+
+# Test
+*.test
+coverage.out
+coverage.html
+
+# Go
+.go/
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Nix
+result
+result-*
+.direnv/
+
+# Documentation
+site/
+
+# Secrets
+.secrets.baseline
+*.pem
+*.key
+.env
+.env.*
+
+# Logs
+*.log
+!PROMPT.log
+
+# Temporary
+tmp/
+temp/

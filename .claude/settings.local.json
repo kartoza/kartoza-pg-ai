@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(PROMPT.log)",
+      "Bash(cat:*)",
+      "Bash(tree:*)",
+      "Bash(nix develop:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

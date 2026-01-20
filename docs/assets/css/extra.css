@@ -1,0 +1,47 @@
+/* Kartoza PG AI Custom Styles */
+
+:root {
+  --kartoza-orange: #DDA036;
+  --kartoza-blue: #569FC6;
+  --kartoza-gray: #9A9EA0;
+}
+
+/* Override primary color */
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: var(--kartoza-orange);
+  --md-accent-fg-color: var(--kartoza-orange);
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: var(--kartoza-orange);
+  --md-accent-fg-color: var(--kartoza-orange);
+}
+
+/* Code blocks */
+.highlight code {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Terminal examples */
+.terminal-example {
+  background-color: #1e1e1e;
+  color: #d4d4d4;
+  padding: 1rem;
+  border-radius: 8px;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Keyboard shortcuts */
+kbd {
+  background-color: #f5f5f5;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.85em;
+}
+
+[data-md-color-scheme="slate"] kbd {
+  background-color: #2d2d2d;
+  border-color: #555;
+}

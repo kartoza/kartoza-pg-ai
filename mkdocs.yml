@@ -1,0 +1,138 @@
+site_name: Kartoza PG AI
+site_description: A beautiful TUI application for querying PostgreSQL databases using natural language
+site_author: Kartoza
+repo_url: https://github.com/kartoza/kartoza-pg-ai
+repo_name: kartoza/kartoza-pg-ai
+
+theme:
+  name: material
+  custom_dir: docs/overrides
+  palette:
+    # Light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep orange
+      accent: orange
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    # Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep orange
+      accent: orange
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  font:
+    text: Inter
+    code: JetBrains Mono
+  features:
+    - navigation.instant
+    - navigation.instant.prefetch
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.path
+    - navigation.indexes
+    - navigation.top
+    - toc.follow
+    - toc.integrate
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+  icon:
+    repo: fontawesome/brands/github
+    logo: material/database-search
+  favicon: assets/favicon.png
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/kartoza/kartoza-pg-ai
+  generator: false
+
+extra_css:
+  - assets/css/extra.css
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.magiclink:
+      repo_url_shorthand: true
+      user: kartoza
+      repo: kartoza-pg-ai
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+plugins:
+  - search
+  - minify:
+      minify_html: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: getting-started/installation.md
+    - Quick Start: getting-started/quickstart.md
+  - User Guide:
+    - Screens:
+      - Main Menu: screens/main-menu.md
+      - Database Selection: screens/database-selection.md
+      - Query Interface: screens/query-interface.md
+      - Query History: screens/query-history.md
+      - Settings: screens/settings.md
+    - Workflows:
+      - Connecting to Databases: workflows/connecting.md
+      - Natural Language Queries: workflows/queries.md
+      - Spatial Queries: workflows/spatial.md
+  - Developer Guide:
+    - Architecture: developer/architecture.md
+    - Development Setup: developer/setup.md
+    - Libraries: developer/libraries.md
+    - Modules:
+      - Overview: developer/modules/index.md
+      - TUI Package: developer/modules/tui.md
+      - PostgreSQL Package: developer/modules/postgres.md
+      - LLM Package: developer/modules/llm.md
+      - Config Package: developer/modules/config.md
+    - Design Decisions: developer/design-decisions.md

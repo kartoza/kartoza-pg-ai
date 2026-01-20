@@ -1,0 +1,24 @@
+Review kartoza-timesheet-app and kartoza-video-processor prompt logs and set up new PostgreSQL AI project
+.envrc setup for direnv
+Add progress bar to schema harvesting, ensure only schema metadata is fetched
+Harvester should traverse all database schemas and show status messages (schema/entity info under progress bar)
+Replace database connections ASCII art with structured table showing harvest status icons
+Fix query screen: remove large ASCII art, fix keybindings (esc, ctrl+c, ctrl+s/tab to execute)
+Query input should stretch to full width with vim mode editor (using vimtea library)
+Provide option to toggle between vim mode and simple editor mode in settings
+Show generated SQL after interpreting prompt, history page for previous prompts per connection
+Splash screen at startup with --nosplash flag, remove main menu ASCII banner
+Add ctrl+c/esc to cancel schema harvesting and return to database selection
+Fix layout: header/content/footer horizontal centering, footer at bottom, cache icon rendering, highlighted row rendering
+Fix esc/ctrl+c key handling in database connections screen
+Stay on menu at startup instead of auto-connecting to last service
+Ensure arrow keys work alongside vim bindings (j/k) for menu navigation - already implemented
+Fix initial layout issue where content is scrunched before terminal size is received
+Fix F1 button to return to main menu
+Improve query performance with persistent database connection, fix ctrl+c key handling in query screen
+Add pagination for query results (n/→: next, p/←: prev, g: first, G: last), ensure editor box is 5 lines high
+Fix query editor text display, move vim status bar outside editor box with glyphs
+If user tries to access history without active connection, redirect to database selection first then navigate to history
+Remove ASCII art from schema harvest progress page
+Remove ASCII art banner from settings page
+Add R keybind on connections page to force reharvest schema for selected service
