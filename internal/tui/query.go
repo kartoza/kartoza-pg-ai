@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/kartoza/kartoza-pg-ai/internal/config"
@@ -20,7 +21,9 @@ import (
 type QueryModel struct {
 	width       int
 	height      int
-	editor      vimtea.Editor
+	vimEditor   vimtea.Editor
+	textArea    textarea.Model
+	vimMode     bool // Whether to use vim editor or simple textarea
 	spinner     spinner.Model
 	loading     bool
 	results     *QueryResults
@@ -74,6 +77,14 @@ type dbConnectedMsg struct {
 
 // NewQueryModel creates a new query model
 func NewQueryModel(service *postgres.ServiceEntry, schema *config.SchemaCache) *QueryModel {
+	cfg, _ := config.Load()
+
+	// Determine if vim mode is enabled
+	vimMode := true // default
+	if cfg != nil {
+		vimMode = cfg.Settings.VimModeEnabled
+	}
+
 	// Create vim-style editor with custom styling
 	lineNumStyle := lipgloss.NewStyle().
 		Foreground(ColorGray).
@@ -96,7 +107,7 @@ func NewQueryModel(service *postgres.ServiceEntry, schema *config.SchemaCache) *
 		Background(ColorOrange).
 		Foreground(lipgloss.Color("#000000"))
 
-	editor := vimtea.NewEditor(
+	vimEditor := vimtea.NewEditor(
 		vimtea.WithLineNumberStyle(lineNumStyle),
 		vimtea.WithCurrentLineNumberStyle(currentLineNumStyle),
 		vimtea.WithTextStyle(textStyle),
@@ -106,14 +117,29 @@ func NewQueryModel(service *postgres.ServiceEntry, schema *config.SchemaCache) *
 		vimtea.WithEnableStatusBar(false), // We'll render our own status bar
 	)
 
+	// Create simple textarea as alternative
+	ta := textarea.New()
+	ta.Placeholder = "Enter your query here..."
+	ta.ShowLineNumbers = false
+	ta.SetHeight(5)
+	ta.CharLimit = 0 // No limit
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.FocusedStyle.Base = lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(ColorOrange)
+	ta.BlurredStyle.Base = lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(ColorGray)
+	ta.Focus()
+
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(ColorOrange)
 
-	cfg, _ := config.Load()
-
 	return &QueryModel{
-		editor:      editor,
+		vimEditor:   vimEditor,
+		textArea:    ta,
+		vimMode:     vimMode,
 		spinner:     s,
 		service:     service,
 		schema:      schema,
@@ -128,8 +154,19 @@ func NewQueryModel(service *postgres.ServiceEntry, schema *config.SchemaCache) *
 
 // Init initializes the query model
 func (m *QueryModel) Init() tea.Cmd {
+	if m.vimMode {
+		// Initialize vim editor and set to INSERT mode for immediate typing
+		editorInit := m.vimEditor.Init()
+		startInsertMode := m.vimEditor.SetMode(vimtea.ModeInsert)
+		return tea.Batch(
+			editorInit,
+			startInsertMode,
+			m.connectToDatabase(),
+		)
+	}
+	// Initialize simple textarea
 	return tea.Batch(
-		m.editor.Init(),
+		textarea.Blink,
 		m.connectToDatabase(),
 	)
 }
@@ -152,6 +189,43 @@ func (m *QueryModel) connectToDatabase() tea.Cmd {
 	}
 }
 
+// getEditorText returns the current text from whichever editor is active
+func (m *QueryModel) getEditorText() string {
+	if m.vimMode {
+		return m.vimEditor.GetBuffer().Text()
+	}
+	return m.textArea.Value()
+}
+
+// SetInitialQuery sets the initial text in the editor
+func (m *QueryModel) SetInitialQuery(query string) {
+	if m.vimMode {
+		m.vimEditor.GetBuffer().InsertAt(0, 0, query)
+	} else {
+		m.textArea.SetValue(query)
+	}
+}
+
+// clearEditor clears the editor content
+func (m *QueryModel) clearEditor() tea.Cmd {
+	if m.vimMode {
+		m.vimEditor = vimtea.NewEditor(
+			vimtea.WithRelativeNumbers(false),
+			vimtea.WithEnableStatusBar(false),
+		)
+		editorWidth := m.width - 10
+		if editorWidth < 40 {
+			editorWidth = 40
+		}
+		updatedEditor, sizeCmd := m.vimEditor.SetSize(editorWidth, 5)
+		m.vimEditor = updatedEditor.(vimtea.Editor)
+		return tea.Batch(m.vimEditor.Init(), sizeCmd, m.vimEditor.SetMode(vimtea.ModeInsert))
+	}
+	m.textArea.Reset()
+	m.textArea.Focus()
+	return nil
+}
+
 // Update handles messages for the query model
 func (m *QueryModel) Update(msg tea.Msg) (*QueryModel, tea.Cmd) {
 	var cmds []tea.Cmd
@@ -160,10 +234,20 @@ func (m *QueryModel) Update(msg tea.Msg) (*QueryModel, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		// Update editor size - full width with padding
-		updatedEditor, cmd := m.editor.SetSize(m.width-10, 5)
-		m.editor = updatedEditor.(vimtea.Editor)
-		return m, cmd
+		// Update editor size - full width with padding, minimum 5 lines
+		editorWidth := m.width - 10
+		if editorWidth < 40 {
+			editorWidth = 40
+		}
+		if m.vimMode {
+			updatedEditor, cmd := m.vimEditor.SetSize(editorWidth, 5)
+			m.vimEditor = updatedEditor.(vimtea.Editor)
+			cmds = append(cmds, cmd)
+		} else {
+			m.textArea.SetWidth(editorWidth)
+			m.textArea.SetHeight(5)
+		}
+		return m, tea.Batch(cmds...)
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -183,7 +267,7 @@ func (m *QueryModel) Update(msg tea.Msg) (*QueryModel, tea.Cmd) {
 		if msg.err != nil {
 			m.error = msg.err.Error()
 			m.history = append(m.history, ConversationEntry{
-				Query: m.editor.GetBuffer().Text(),
+				Query: m.getEditorText(),
 				Error: msg.err.Error(),
 			})
 		} else {
@@ -213,14 +297,8 @@ func (m *QueryModel) Update(msg tea.Msg) (*QueryModel, tea.Cmd) {
 				m.cfg.Save()
 			}
 		}
-		// Clear editor content - create a fresh editor with same styling
-		m.editor = vimtea.NewEditor(
-			vimtea.WithRelativeNumbers(false),
-			vimtea.WithEnableStatusBar(false),
-		)
-		updatedEditor, _ := m.editor.SetSize(m.width-10, 5)
-		m.editor = updatedEditor.(vimtea.Editor)
-		return m, m.editor.Init()
+		// Clear editor content
+		return m, m.clearEditor()
 
 	case tea.KeyMsg:
 		// Handle ctrl+c - cancel or quit (always intercept this, don't pass to editor)
@@ -241,7 +319,7 @@ func (m *QueryModel) Update(msg tea.Msg) (*QueryModel, tea.Cmd) {
 
 		// Handle ctrl+s to execute query (works in any vim mode)
 		if key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+s"))) {
-			content := strings.TrimSpace(m.editor.GetBuffer().Text())
+			content := strings.TrimSpace(m.getEditorText())
 			if !m.loading && content != "" {
 				m.loading = true
 				m.currentPage = 0 // Reset to first page on new query
@@ -292,11 +370,16 @@ func (m *QueryModel) Update(msg tea.Msg) (*QueryModel, tea.Cmd) {
 		}
 	}
 
-	// Update vim editor (only for messages not handled above)
+	// Update the active editor (only for messages not handled above)
 	var cmd tea.Cmd
-	updatedEditor, cmd := m.editor.Update(msg)
-	m.editor = updatedEditor.(vimtea.Editor)
-	cmds = append(cmds, cmd)
+	if m.vimMode {
+		updatedEditor, cmd := m.vimEditor.Update(msg)
+		m.vimEditor = updatedEditor.(vimtea.Editor)
+		cmds = append(cmds, cmd)
+	} else {
+		m.textArea, cmd = m.textArea.Update(msg)
+		cmds = append(cmds, cmd)
+	}
 
 	return m, tea.Batch(cmds...)
 }
@@ -409,7 +492,12 @@ func (m *QueryModel) View() string {
 
 	header := RenderHeader("Query")
 	content := m.renderContent()
-	helpText := "ctrl+s: execute • F1: menu • ctrl+c: quit • vim motions: h/j/k/l, i, esc"
+	var helpText string
+	if m.vimMode {
+		helpText = "ctrl+s: execute • F1: menu • ctrl+c: quit • vim: h/j/k/l, i, esc"
+	} else {
+		helpText = "ctrl+s: execute • F1: menu • ctrl+c: quit"
+	}
 	footer := RenderHelpFooter(helpText, m.width)
 
 	return LayoutWithHeaderFooter(header, content, footer, m.width, m.height)
@@ -457,23 +545,34 @@ func (m *QueryModel) renderContent() string {
 		sections = append(sections, errorBox.Render(ErrorStyle.Render("Error: "+m.error)))
 	}
 
-	// Prompt area - full width vim editor
+	// Prompt area
 	sections = append(sections, "")
-	promptLabel := PromptStyle.Render("🔮 Ask your database (vim mode):")
+	var promptLabel string
+	if m.vimMode {
+		promptLabel = PromptStyle.Render("🔮 Ask your database (vim mode):")
+	} else {
+		promptLabel = PromptStyle.Render("🔮 Ask your database:")
+	}
 	sections = append(sections, promptLabel)
 
-	// Editor with border - ensure minimum 5 lines visible
-	editorBox := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(ColorOrange).
-		Width(m.width - 6).
-		Padding(0, 1)
+	if m.vimMode {
+		// Vim editor with border
+		editorBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(ColorOrange).
+			Width(m.width - 6).
+			Padding(0, 1)
 
-	sections = append(sections, editorBox.Render(m.editor.View()))
+		sections = append(sections, editorBox.Render(m.vimEditor.View()))
 
-	// Custom vim status bar with glyphs
-	statusBar := m.renderVimStatusBar()
-	sections = append(sections, statusBar)
+		// Custom vim status bar with glyphs
+		statusBar := m.renderVimStatusBar()
+		sections = append(sections, statusBar)
+	} else {
+		// Simple textarea (already has border styling)
+		m.textArea.SetWidth(m.width - 10)
+		sections = append(sections, m.textArea.View())
+	}
 
 	return lipgloss.JoinVertical(lipgloss.Center, sections...)
 }
@@ -481,7 +580,7 @@ func (m *QueryModel) renderContent() string {
 // renderVimStatusBar renders a custom vim-style status bar with glyphs
 func (m *QueryModel) renderVimStatusBar() string {
 	// Get vim mode from editor
-	mode := m.editor.GetMode()
+	mode := m.vimEditor.GetMode()
 
 	// Mode icons and colors
 	var modeIcon string
@@ -530,7 +629,7 @@ func (m *QueryModel) renderVimStatusBar() string {
 		Padding(0, 1)
 
 	// Lines info
-	buffer := m.editor.GetBuffer()
+	buffer := m.vimEditor.GetBuffer()
 	lineCount := buffer.LineCount()
 	linesIcon := "󰯎" // Lines icon
 	lines := fmt.Sprintf("%s %d lines", linesIcon, lineCount)

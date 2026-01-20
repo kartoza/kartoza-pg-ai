@@ -22,6 +22,7 @@ type Settings struct {
 	EnableSpatialOps  bool   `json:"enable_spatial_ops"`
 	LLMModelPath      string `json:"llm_model_path"`
 	SchemaCacheTTLMin int    `json:"schema_cache_ttl_min"`
+	VimModeEnabled    bool   `json:"vim_mode_enabled"`
 }
 
 // SchemaCache represents cached database schema
@@ -100,6 +101,7 @@ func DefaultConfig() *Config {
 			EnableSpatialOps:  true,
 			LLMModelPath:      "",
 			SchemaCacheTTLMin: 1440, // 24 hours
+			VimModeEnabled:    true,
 		},
 	}
 }

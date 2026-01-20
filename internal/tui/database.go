@@ -46,6 +46,14 @@ type forceReharvestMsg struct {
 	service postgres.ServiceEntry
 }
 
+// editServiceMsg indicates user wants to edit a service entry
+type editServiceMsg struct {
+	service *postgres.ServiceEntry // nil for new entry
+}
+
+// newServiceMsg indicates user wants to create a new service entry
+type newServiceMsg struct{}
+
 // NewDatabaseModel creates a new database connection model
 func NewDatabaseModel() *DatabaseModel {
 	s := spinner.New()
@@ -103,9 +111,21 @@ func (m *DatabaseModel) Update(msg tea.Msg) (*DatabaseModel, tea.Cmd) {
 	case servicesLoadedMsg:
 		m.loading = false
 		if msg.err != nil {
+			// Check if it's because file doesn't exist - auto-prompt to create
+			if !postgres.PGServiceFileExists() {
+				return m, func() tea.Msg {
+					return newServiceMsg{}
+				}
+			}
 			m.error = msg.err.Error()
 		} else {
 			m.services = msg.services
+			// If file exists but is empty, prompt to add first entry
+			if len(m.services) == 0 {
+				return m, func() tea.Msg {
+					return newServiceMsg{}
+				}
+			}
 		}
 		return m, nil
 
@@ -195,6 +215,22 @@ func (m *DatabaseModel) Update(msg tea.Msg) (*DatabaseModel, tea.Cmd) {
 				)
 			}
 			return m, nil
+
+		case key.Matches(msg, key.NewBinding(key.WithKeys("e"))):
+			// Edit selected service
+			if len(m.services) > 0 && m.selectedItem < len(m.services) {
+				service := m.services[m.selectedItem]
+				return m, func() tea.Msg {
+					return editServiceMsg{service: &service}
+				}
+			}
+			return m, nil
+
+		case key.Matches(msg, key.NewBinding(key.WithKeys("n"))):
+			// Create new service
+			return m, func() tea.Msg {
+				return newServiceMsg{}
+			}
 		}
 	}
 
@@ -209,7 +245,7 @@ func (m *DatabaseModel) View() string {
 
 	header := RenderHeader("Database Connections")
 	content := m.renderContent()
-	helpText := "↑/k: up • ↓/j: down • enter: connect • r: refresh • R: reharvest • esc: back • ctrl+c: quit"
+	helpText := "↑/k: up • ↓/j: down • enter: connect • n: new • e: edit • r: refresh • R: reharvest • esc: back"
 	footer := RenderHelpFooter(helpText, m.width)
 
 	return LayoutWithHeaderFooter(header, content, footer, m.width, m.height)

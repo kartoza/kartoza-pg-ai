@@ -22,3 +22,5 @@ If user tries to access history without active connection, redirect to database 
 Remove ASCII art from schema harvest progress page
 Remove ASCII art banner from settings page
 Add R keybind on connections page to force reharvest schema for selected service
+Implement settings page with vim mode toggle, query editor respects vim mode setting with fallback to simple textarea
+Add pg_service.conf management: show dialog for new entry when file missing, support for editing (e) and creating (n) service entries

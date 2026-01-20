@@ -20,6 +20,7 @@ const (
 	ScreenHistory
 	ScreenSettings
 	ScreenHarvest
+	ScreenServiceEditor
 )
 
 // AppModel is the main application model
@@ -32,6 +33,8 @@ type AppModel struct {
 	query          *QueryModel
 	harvest        *HarvestModel
 	history        *HistoryModel
+	settings       *SettingsModel
+	serviceEditor  *ServiceEditorModel
 	spinner        spinner.Model
 	loading        bool
 	loadingMessage string
@@ -158,7 +161,10 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case MenuSettings:
 			m.screen = ScreenSettings
-			return m, nil
+			m.settings = NewSettingsModel(m.cfg)
+			m.settings.width = m.width
+			m.settings.height = m.height
+			return m, m.settings.Init()
 
 		case MenuQuit:
 			return m, tea.Quit
@@ -253,7 +259,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.screen = ScreenQuery
 			m.query = NewQueryModel(m.activeService, m.activeSchema)
 			// Set the query text in the editor
-			m.query.editor.GetBuffer().InsertAt(0, 0, msg.query)
+			m.query.SetInitialQuery(msg.query)
 			m.query.width = m.width
 			m.query.height = m.height
 			return m, m.query.Init()
@@ -274,6 +280,35 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case goToMenuMsg:
 		// Return to menu screen
 		m.screen = ScreenMenu
+		return m, nil
+
+	case editServiceMsg:
+		// Open service editor for editing
+		m.screen = ScreenServiceEditor
+		m.serviceEditor = NewServiceEditorModel(msg.service)
+		m.serviceEditor.width = m.width
+		m.serviceEditor.height = m.height
+		return m, m.serviceEditor.Init()
+
+	case newServiceMsg:
+		// Open service editor for new entry
+		m.screen = ScreenServiceEditor
+		m.serviceEditor = NewServiceEditorModel(nil)
+		m.serviceEditor.width = m.width
+		m.serviceEditor.height = m.height
+		return m, m.serviceEditor.Init()
+
+	case serviceSavedMsg:
+		// Service was saved, return to database screen and refresh
+		m.screen = ScreenDatabase
+		m.database = NewDatabaseModel()
+		m.database.width = m.width
+		m.database.height = m.height
+		return m, m.database.Init()
+
+	case serviceEditorCancelledMsg:
+		// Return to database screen without changes
+		m.screen = ScreenDatabase
 		return m, nil
 	}
 
@@ -311,11 +346,17 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case ScreenSettings:
-		// Handle settings screen updates
-		if msg, ok := msg.(tea.KeyMsg); ok {
-			if msg.String() == "esc" {
-				m.screen = ScreenMenu
-			}
+		if m.settings != nil {
+			var cmd tea.Cmd
+			m.settings, cmd = m.settings.Update(msg)
+			cmds = append(cmds, cmd)
+		}
+
+	case ScreenServiceEditor:
+		if m.serviceEditor != nil {
+			var cmd tea.Cmd
+			m.serviceEditor, cmd = m.serviceEditor.Update(msg)
+			cmds = append(cmds, cmd)
 		}
 	}
 
@@ -367,7 +408,15 @@ func (m *AppModel) View() string {
 		}
 		return m.menu.View()
 	case ScreenSettings:
-		return m.renderSettings()
+		if m.settings != nil {
+			return m.settings.View()
+		}
+		return m.menu.View()
+	case ScreenServiceEditor:
+		if m.serviceEditor != nil {
+			return m.serviceEditor.View()
+		}
+		return m.database.View()
 	default:
 		return m.menu.View()
 	}
@@ -388,38 +437,6 @@ func (m *AppModel) renderLoading() string {
 	return LayoutWithHeaderFooter(header, content, footer, m.width, m.height)
 }
 
-
-func (m *AppModel) renderSettings() string {
-	header := RenderHeader("Settings")
-
-	var settingsContent []string
-
-	if m.cfg != nil {
-		labelStyle := lipgloss.NewStyle().Foreground(ColorGray)
-		valueStyle := lipgloss.NewStyle().Foreground(ColorWhite)
-
-		settingsContent = append(settingsContent,
-			labelStyle.Render("Max History Size: ")+valueStyle.Render(string(rune(m.cfg.Settings.MaxHistorySize))))
-		settingsContent = append(settingsContent,
-			labelStyle.Render("Default Row Limit: ")+valueStyle.Render(string(rune(m.cfg.Settings.DefaultRowLimit))))
-		settingsContent = append(settingsContent,
-			labelStyle.Render("Schema Cache TTL: ")+valueStyle.Render(string(rune(m.cfg.Settings.SchemaCacheTTLMin))+" minutes"))
-	}
-
-	comingSoon := lipgloss.NewStyle().
-		Foreground(ColorGray).
-		Italic(true).
-		Render("\nSettings editing coming soon...")
-
-	settingsContent = append(settingsContent, comingSoon)
-
-	content := lipgloss.JoinVertical(lipgloss.Center, settingsContent...)
-
-	helpText := "esc: back"
-	footer := RenderHelpFooter(helpText, m.width)
-
-	return LayoutWithHeaderFooter(header, content, footer, m.width, m.height)
-}
 
 func truncate(s string, maxLen int) string {
 	if len(s) > maxLen {
