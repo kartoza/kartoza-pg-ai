@@ -34,9 +34,13 @@ type QueryModel struct {
 	history     []ConversationEntry
 	cfg         *config.Config
 	db          *sql.DB // Persistent database connection
-	// Pagination
-	currentPage int
-	rowsPerPage int
+	// Endless scroll
+	scrollOffset   int // Current scroll position (top visible row)
+	visibleRows    int // Number of rows visible in results area
+	fetchBatchSize int // Number of rows to fetch per batch
+	totalFetched   int // Total rows fetched so far
+	hasMoreRows    bool // Whether there are more rows to fetch
+	currentSQL     string // Current SQL query for fetching more rows
 }
 
 // QueryResults holds the results of a query
@@ -60,6 +64,13 @@ type ConversationEntry struct {
 // queryExecutedMsg indicates a query was executed
 type queryExecutedMsg struct {
 	results *QueryResults
+	err     error
+}
+
+// moreRowsFetchedMsg indicates more rows were fetched for endless scroll
+type moreRowsFetchedMsg struct {
+	rows    [][]string
+	hasMore bool
 	err     error
 }
 
@@ -137,38 +148,58 @@ func NewQueryModel(service *postgres.ServiceEntry, schema *config.SchemaCache) *
 	s.Style = lipgloss.NewStyle().Foreground(ColorOrange)
 
 	return &QueryModel{
-		vimEditor:   vimEditor,
-		textArea:    ta,
-		vimMode:     vimMode,
-		spinner:     s,
-		service:     service,
-		schema:      schema,
-		queryEngine: llm.NewQueryEngine(schema),
-		history:     []ConversationEntry{},
-		cfg:         cfg,
-		db:          nil, // Will be established asynchronously in Init
-		currentPage: 0,
-		rowsPerPage: 15,
+		vimEditor:      vimEditor,
+		textArea:       ta,
+		vimMode:        vimMode,
+		spinner:        s,
+		service:        service,
+		schema:         schema,
+		queryEngine:    llm.NewQueryEngine(schema),
+		history:        []ConversationEntry{},
+		cfg:            cfg,
+		db:             nil, // Will be established asynchronously in Init
+		scrollOffset:   0,
+		visibleRows:    15, // Will be adjusted based on screen height
+		fetchBatchSize: 50, // Fetch 50 rows at a time
+		totalFetched:   0,
+		hasMoreRows:    false,
 	}
 }
 
 // Init initializes the query model
 func (m *QueryModel) Init() tea.Cmd {
+	var cmds []tea.Cmd
+
+	// Set initial editor size if dimensions are already known
+	if m.width > 0 {
+		editorWidth := m.width - 10
+		if editorWidth < 40 {
+			editorWidth = 40
+		}
+		if m.vimMode {
+			updatedEditor, sizeCmd := m.vimEditor.SetSize(editorWidth, 5)
+			m.vimEditor = updatedEditor.(vimtea.Editor)
+			if sizeCmd != nil {
+				cmds = append(cmds, sizeCmd)
+			}
+		} else {
+			m.textArea.SetWidth(editorWidth)
+			m.textArea.SetHeight(5)
+		}
+	}
+
 	if m.vimMode {
 		// Initialize vim editor and set to INSERT mode for immediate typing
 		editorInit := m.vimEditor.Init()
 		startInsertMode := m.vimEditor.SetMode(vimtea.ModeInsert)
-		return tea.Batch(
-			editorInit,
-			startInsertMode,
-			m.connectToDatabase(),
-		)
+		cmds = append(cmds, editorInit, startInsertMode)
+	} else {
+		// Initialize simple textarea
+		cmds = append(cmds, textarea.Blink)
 	}
-	// Initialize simple textarea
-	return tea.Batch(
-		textarea.Blink,
-		m.connectToDatabase(),
-	)
+
+	cmds = append(cmds, m.connectToDatabase())
+	return tea.Batch(cmds...)
 }
 
 // connectToDatabase establishes the database connection asynchronously
@@ -279,6 +310,12 @@ func (m *QueryModel) Update(msg tea.Msg) (*QueryModel, tea.Cmd) {
 				Results: msg.results,
 			})
 
+			// Initialize endless scroll state
+			m.scrollOffset = 0
+			m.totalFetched = len(msg.results.Rows)
+			m.currentSQL = msg.results.GeneratedSQL
+			m.hasMoreRows = msg.results.RowCount > m.totalFetched || m.totalFetched == m.fetchBatchSize
+
 			// Update global state
 			GlobalAppState.QueryCount++
 			GlobalAppState.LastQueryTime = msg.results.ExecutionTime
@@ -299,6 +336,19 @@ func (m *QueryModel) Update(msg tea.Msg) (*QueryModel, tea.Cmd) {
 		}
 		// Clear editor content
 		return m, m.clearEditor()
+
+	case moreRowsFetchedMsg:
+		if msg.err != nil {
+			m.error = "Failed to fetch more rows: " + msg.err.Error()
+		} else if msg.rows != nil && len(msg.rows) > 0 {
+			// Append new rows to results
+			m.results.Rows = append(m.results.Rows, msg.rows...)
+			m.totalFetched = len(m.results.Rows)
+			m.hasMoreRows = msg.hasMore
+		} else {
+			m.hasMoreRows = false
+		}
+		return m, nil
 
 	case tea.KeyMsg:
 		// Handle ctrl+c - cancel or quit (always intercept this, don't pass to editor)
@@ -322,7 +372,7 @@ func (m *QueryModel) Update(msg tea.Msg) (*QueryModel, tea.Cmd) {
 			content := strings.TrimSpace(m.getEditorText())
 			if !m.loading && content != "" {
 				m.loading = true
-				m.currentPage = 0 // Reset to first page on new query
+				m.scrollOffset = 0 // Reset scroll on new query
 				return m, tea.Batch(
 					m.spinner.Tick,
 					m.executeQuery(content),
@@ -331,36 +381,73 @@ func (m *QueryModel) Update(msg tea.Msg) (*QueryModel, tea.Cmd) {
 			return m, nil
 		}
 
-		// Pagination controls - only when we have results
+		// Scroll controls - only when we have results and NOT in vim insert mode
 		if m.results != nil && len(m.results.Rows) > 0 {
-			totalPages := (len(m.results.Rows) + m.rowsPerPage - 1) / m.rowsPerPage
+			// Check if vim editor is in normal mode or we're not using vim mode
+			canScroll := !m.vimMode || m.vimEditor.GetMode().String() == "NORMAL"
 
-			// Next page: n, Page Down, or Right arrow
-			if key.Matches(msg, key.NewBinding(key.WithKeys("n", "pgdown", "right"))) {
-				if m.currentPage < totalPages-1 {
-					m.currentPage++
+			if canScroll {
+				totalRows := len(m.results.Rows)
+				maxScroll := totalRows - m.visibleRows
+				if maxScroll < 0 {
+					maxScroll = 0
 				}
-				return m, nil
-			}
 
-			// Previous page: p, Page Up, or Left arrow
-			if key.Matches(msg, key.NewBinding(key.WithKeys("p", "pgup", "left"))) {
-				if m.currentPage > 0 {
-					m.currentPage--
+				// Scroll down: Page Down
+				if key.Matches(msg, key.NewBinding(key.WithKeys("pgdown"))) {
+					m.scrollOffset += m.visibleRows
+					if m.scrollOffset > maxScroll {
+						m.scrollOffset = maxScroll
+					}
+					// Fetch more if near bottom and more rows available
+					if m.hasMoreRows && m.scrollOffset >= totalRows-m.visibleRows*2 {
+						return m, m.fetchMoreRows()
+					}
+					return m, nil
 				}
-				return m, nil
-			}
 
-			// First page: Home or g
-			if key.Matches(msg, key.NewBinding(key.WithKeys("home", "g"))) {
-				m.currentPage = 0
-				return m, nil
-			}
+				// Scroll up: Page Up
+				if key.Matches(msg, key.NewBinding(key.WithKeys("pgup"))) {
+					m.scrollOffset -= m.visibleRows
+					if m.scrollOffset < 0 {
+						m.scrollOffset = 0
+					}
+					return m, nil
+				}
 
-			// Last page: End or G
-			if key.Matches(msg, key.NewBinding(key.WithKeys("end", "G"))) {
-				m.currentPage = totalPages - 1
-				return m, nil
+				// Scroll to top: Home
+				if key.Matches(msg, key.NewBinding(key.WithKeys("home"))) {
+					m.scrollOffset = 0
+					return m, nil
+				}
+
+				// Scroll to bottom: End (and fetch more if available)
+				if key.Matches(msg, key.NewBinding(key.WithKeys("end"))) {
+					m.scrollOffset = maxScroll
+					if m.hasMoreRows {
+						return m, m.fetchMoreRows()
+					}
+					return m, nil
+				}
+
+				// Arrow keys for single row scroll (when not in vim insert mode)
+				if key.Matches(msg, key.NewBinding(key.WithKeys("down"))) {
+					if m.scrollOffset < maxScroll {
+						m.scrollOffset++
+						// Fetch more if near bottom
+						if m.hasMoreRows && m.scrollOffset >= totalRows-m.visibleRows*2 {
+							return m, m.fetchMoreRows()
+						}
+					}
+					return m, nil
+				}
+
+				if key.Matches(msg, key.NewBinding(key.WithKeys("up"))) {
+					if m.scrollOffset > 0 {
+						m.scrollOffset--
+					}
+					return m, nil
+				}
 			}
 		}
 
@@ -384,7 +471,7 @@ func (m *QueryModel) Update(msg tea.Msg) (*QueryModel, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// executeQuery executes a natural language query
+// executeQuery executes a natural language query with initial batch fetch
 func (m *QueryModel) executeQuery(query string) tea.Cmd {
 	return func() tea.Msg {
 		if m.db == nil {
@@ -408,10 +495,22 @@ func (m *QueryModel) executeQuery(query string) tea.Cmd {
 			}
 		}
 
+		// First, get total count (wrapped in subquery)
+		countQuery := fmt.Sprintf("SELECT COUNT(*) FROM (%s) AS count_query", sqlQuery)
+		var totalCount int
+		_ = m.db.QueryRow(countQuery).Scan(&totalCount) // Ignore error, totalCount will be 0
+
+		// Add LIMIT to fetch initial batch
+		limitedQuery := fmt.Sprintf("%s LIMIT %d OFFSET 0", sqlQuery, m.fetchBatchSize)
+
 		startTime := time.Now()
-		rows, err := m.db.Query(sqlQuery)
+		rows, err := m.db.Query(limitedQuery)
 		if err != nil {
-			return queryExecutedMsg{err: fmt.Errorf("query failed: %w", err)}
+			// If LIMIT fails, try the original query (might be a non-SELECT)
+			rows, err = m.db.Query(sqlQuery)
+			if err != nil {
+				return queryExecutedMsg{err: fmt.Errorf("query failed: %w", err)}
+			}
 		}
 		defer rows.Close()
 
@@ -447,11 +546,62 @@ func (m *QueryModel) executeQuery(query string) tea.Cmd {
 			results: &QueryResults{
 				Columns:       columns,
 				Rows:          results,
-				RowCount:      len(results),
+				RowCount:      totalCount, // Report total count if known
 				ExecutionTime: executionTime,
-				GeneratedSQL:  sqlQuery,
+				GeneratedSQL:  sqlQuery, // Store original SQL (without LIMIT)
 				NaturalQuery:  query,
 			},
+		}
+	}
+}
+
+// fetchMoreRows fetches additional rows for endless scroll
+func (m *QueryModel) fetchMoreRows() tea.Cmd {
+	return func() tea.Msg {
+		if m.db == nil || m.currentSQL == "" || !m.hasMoreRows {
+			return moreRowsFetchedMsg{rows: nil, hasMore: false}
+		}
+
+		// Fetch next batch with OFFSET
+		limitedQuery := fmt.Sprintf("%s LIMIT %d OFFSET %d", m.currentSQL, m.fetchBatchSize, m.totalFetched)
+
+		rows, err := m.db.Query(limitedQuery)
+		if err != nil {
+			return moreRowsFetchedMsg{err: err}
+		}
+		defer rows.Close()
+
+		// Get column count from existing results
+		colCount := 0
+		if m.results != nil {
+			colCount = len(m.results.Columns)
+		}
+
+		var results [][]string
+		for rows.Next() {
+			values := make([]interface{}, colCount)
+			valuePtrs := make([]interface{}, colCount)
+			for i := range values {
+				valuePtrs[i] = &values[i]
+			}
+
+			if err := rows.Scan(valuePtrs...); err != nil {
+				continue
+			}
+
+			row := make([]string, colCount)
+			for i, val := range values {
+				row[i] = formatValue(val)
+			}
+			results = append(results, row)
+		}
+
+		// Determine if there are more rows
+		hasMore := len(results) == m.fetchBatchSize
+
+		return moreRowsFetchedMsg{
+			rows:    results,
+			hasMore: hasMore,
 		}
 	}
 }
@@ -494,9 +644,9 @@ func (m *QueryModel) View() string {
 	content := m.renderContent()
 	var helpText string
 	if m.vimMode {
-		helpText = "ctrl+s: execute • F1: menu • ctrl+c: quit • vim: h/j/k/l, i, esc"
+		helpText = "ctrl+s: execute • F1: menu • vim: i/esc • results: ↑/↓/PgUp/PgDn"
 	} else {
-		helpText = "ctrl+s: execute • F1: menu • ctrl+c: quit"
+		helpText = "ctrl+s: execute • F1: menu • results: ↑/↓/PgUp/PgDn"
 	}
 	footer := RenderHelpFooter(helpText, m.width)
 
@@ -820,20 +970,21 @@ func (m *QueryModel) renderTable() string {
 	sepStyle := lipgloss.NewStyle().Foreground(ColorGray)
 	lines = append(lines, sepStyle.Render(strings.Join(sepParts, "─┼─")))
 
-	// Pagination calculation
+	// Endless scroll calculation
 	totalRows := len(m.results.Rows)
-	totalPages := (totalRows + m.rowsPerPage - 1) / m.rowsPerPage
-	if totalPages == 0 {
-		totalPages = 1
-	}
-
-	startIdx := m.currentPage * m.rowsPerPage
-	endIdx := startIdx + m.rowsPerPage
+	startIdx := m.scrollOffset
+	endIdx := startIdx + m.visibleRows
 	if endIdx > totalRows {
 		endIdx = totalRows
 	}
+	if startIdx >= totalRows {
+		startIdx = totalRows - 1
+		if startIdx < 0 {
+			startIdx = 0
+		}
+	}
 
-	// Rows for current page
+	// Rows for current viewport
 	rowStyle := lipgloss.NewStyle().Foreground(ColorWhite)
 	for i := startIdx; i < endIdx; i++ {
 		row := m.results.Rows[i]
@@ -846,16 +997,37 @@ func (m *QueryModel) renderTable() string {
 		lines = append(lines, rowStyle.Render(strings.Join(cells, " │ ")))
 	}
 
-	// Pagination info
-	if totalPages > 1 {
-		lines = append(lines, "")
-		paginationStyle := lipgloss.NewStyle().
-			Foreground(ColorGray).
-			Italic(true)
-		paginationInfo := fmt.Sprintf("Page %d of %d (rows %d-%d of %d) • n/→: next • p/←: prev • g: first • G: last",
-			m.currentPage+1, totalPages, startIdx+1, endIdx, totalRows)
-		lines = append(lines, paginationStyle.Render(paginationInfo))
+	// Scroll info
+	lines = append(lines, "")
+	scrollStyle := lipgloss.NewStyle().
+		Foreground(ColorGray).
+		Italic(true)
+
+	// Build scroll indicator
+	var scrollInfo string
+	if totalRows > 0 {
+		visibleStart := startIdx + 1
+		visibleEnd := endIdx
+		if visibleEnd == 0 {
+			visibleEnd = 1
+		}
+
+		// Show total count if known, otherwise show fetched count
+		totalDisplay := m.results.RowCount
+		if totalDisplay == 0 {
+			totalDisplay = m.totalFetched
+		}
+
+		scrollInfo = fmt.Sprintf("Showing %d-%d of %d rows", visibleStart, visibleEnd, totalDisplay)
+
+		// Add "more available" indicator
+		if m.hasMoreRows {
+			scrollInfo += " (more available)"
+		}
+
+		scrollInfo += " • ↑/↓: scroll • PgUp/PgDn: page • Home/End: jump"
 	}
+	lines = append(lines, scrollStyle.Render(scrollInfo))
 
 	return strings.Join(lines, "\n")
 }

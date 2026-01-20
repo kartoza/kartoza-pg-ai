@@ -24,3 +24,5 @@ Remove ASCII art banner from settings page
 Add R keybind on connections page to force reharvest schema for selected service
 Implement settings page with vim mode toggle, query editor respects vim mode setting with fallback to simple textarea
 Add pg_service.conf management: show dialog for new entry when file missing, support for editing (e) and creating (n) service entries
+Implement endless scroll pagination for query results (replaces page-based navigation with smooth scrolling)
+Fix query editor widget showing as only 1 row high on initial load - set editor size in Init() when dimensions are known
