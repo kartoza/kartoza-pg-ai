@@ -50,15 +50,15 @@ func TestGenerateSQLCountQuery(t *testing.T) {
 	}{
 		{
 			query:    "how many records in users",
-			expected: "SELECT COUNT(*) as count FROM public.users",
+			expected: `SELECT COUNT(*) as count FROM "public"."users"`,
 		},
 		{
 			query:    "count of users",
-			expected: "SELECT COUNT(*) as count FROM public.users",
+			expected: `SELECT COUNT(*) as count FROM "public"."users"`,
 		},
 		{
 			query:    "how many users",
-			expected: "SELECT COUNT(*) as count FROM public.users",
+			expected: `SELECT COUNT(*) as count FROM "public"."users"`,
 		},
 	}
 
@@ -120,11 +120,11 @@ func TestGenerateSQLShowQuery(t *testing.T) {
 	}{
 		{
 			query:      "show me the first 10 customers",
-			expectLike: "SELECT * FROM public.customers LIMIT",
+			expectLike: `SELECT * FROM "public"."customers" LIMIT`,
 		},
 		{
 			query:      "list customers",
-			expectLike: "SELECT * FROM public.customers",
+			expectLike: `SELECT * FROM "public"."customers"`,
 		},
 		{
 			query:      "display the first 5 customers",

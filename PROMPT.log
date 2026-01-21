@@ -26,3 +26,34 @@ Implement settings page with vim mode toggle, query editor respects vim mode set
 Add pg_service.conf management: show dialog for new entry when file missing, support for editing (e) and creating (n) service entries
 Implement endless scroll pagination for query results (replaces page-based navigation with smooth scrolling)
 Fix query editor widget showing as only 1 row high on initial load - set editor size in Init() when dimensions are known
+Add semantic search for exploratory queries like "do I have any water related data" - searches table/column names for keywords
+Replace hardcoded thesaurus with intelligent semantic matching algorithm using: stemming (rivers→river), Levenshtein distance (fuzzy matching), n-gram similarity, prefix/suffix matching, camelCase/snake_case splitting. Matches "water" to "watershed", "hydrology" to "hydro", etc. without predefined lists
+Add ctrl+h shortcut on query screen to quickly jump to history
+Add ctrl+l shortcut to clear the response/results area
+Fix SQL generation to use quoted identifiers for table/schema names, add EXPLAIN validation before executing queries to catch invalid SQL early
+Combine results from multiple matching tables with UNION ALL when asking about a feature type (e.g. "roads") that exists in several tables
+If results contain PostGIS geometries, render them to PNG and display using Kitty graphics protocol in the response area
+When a PNG geometry image is generated, show a photo glyph in query history and add a button (v key) to view the image. Cache geometry images as files in the config folder.
+Query results and description should be tabbed with focus on Results tab. User can switch to Description tab to see underlying SQL logic.
+Schema cache should be persistent until user manually refreshes it (R key on connections screen), no auto-invalidation after time period
+Hide SQL box in a separate tab - Results tab shows only the data table, SQL tab shows the generated query and details
+Fix schema cache not persisting between application runs - ensure CachedSchemas map is initialized before saving
+2026-01-21 00:53:52 - User requested: Redesign query screen to have scrollable conversation flow with user queries interspersed between result tables, SQL box hidden by default with 's' toggle button per entry. Implemented conversation-style scrollable interface replacing the old tab-based view.
+2026-01-21 01:05:16 - User requested: Train a neural network using Gorgonia to learn from query history (natural language -> SQL pairs) and use predictions to support user queries. Implemented:
+- internal/nn/tokenizer.go: Text tokenization for NL and SQL queries
+- internal/nn/model.go: Seq2Seq neural network model using Gorgonia
+- internal/nn/trainer.go: Training data extraction and model training from history
+- Updated internal/llm/engine.go to integrate NN predictions
+- Added NeuralNetEnabled setting to config
+- Fixed schema cache persistence by handling schemaLoadedMsg in harvest.go
+2026-01-21 - User reported: "harvesting just never ends and it still has no concept of a retained schema cache between usages". Fixed:
+- Added harvestCompleteMsg to properly signal when harvest channel closes
+- Added comprehensive debug logging throughout harvest and app flow
+- Fixed message flow so schemaLoadedMsg properly propagates from harvest to app
+- Debug logs written to /tmp/kartoza-pg-ai-debug.log for troubleshooting
+2026-01-21 - User requested: "the scroll area should be scrollable with a mouse too" and "cannot see the query by pressing s since s is caught by the vim text editor" and "how do I move focus out of the editor". Implemented:
+- Added mouse wheel scroll support to conversation area (tea.WithMouseCellMotion)
+- Changed SQL toggle from 's' to 'ctrl+g' to avoid vim conflict
+- Added focus management: Esc (in normal mode) leaves editor, 'i' or Enter returns to editor
+- When not focused on editor: j/k for scroll, Tab for selecting entries, ctrl+g for SQL toggle
+- Visual indicators: editor border turns gray when not focused, help text changes based on focus

@@ -62,6 +62,20 @@ func NewSettingsModel(cfg *config.Config) *SettingsModel {
 			},
 		},
 		{
+			Name:        "Neural Network",
+			Description: "Use NN for query generation (requires training)",
+			Type:        "toggle",
+			GetValue: func(c *config.Config) string {
+				if c.Settings.NeuralNetEnabled {
+					return "Enabled"
+				}
+				return "Disabled"
+			},
+			Toggle: func(c *config.Config) {
+				c.Settings.NeuralNetEnabled = !c.Settings.NeuralNetEnabled
+			},
+		},
+		{
 			Name:        "Max History Size",
 			Description: "Maximum number of queries to keep in history",
 			Type:        "display",
@@ -78,15 +92,23 @@ func NewSettingsModel(cfg *config.Config) *SettingsModel {
 			},
 		},
 		{
-			Name:        "Schema Cache TTL",
-			Description: "How long to cache schema information",
+			Name:        "Schema Cache",
+			Description: "Schema is cached until manually refreshed (R on connections screen)",
 			Type:        "display",
 			GetValue: func(c *config.Config) string {
-				hours := c.Settings.SchemaCacheTTLMin / 60
-				if hours > 0 {
-					return fmt.Sprintf("%d hours", hours)
+				return "Persistent"
+			},
+		},
+		{
+			Name:        "NN Training Status",
+			Description: "Train NN model (needs 10+ queries in history)",
+			Type:        "display",
+			GetValue: func(c *config.Config) string {
+				historyCount := len(c.QueryHistory)
+				if historyCount >= 10 {
+					return fmt.Sprintf("%d queries (ready)", historyCount)
 				}
-				return fmt.Sprintf("%d minutes", c.Settings.SchemaCacheTTLMin)
+				return fmt.Sprintf("%d queries (need 10+)", historyCount)
 			},
 		},
 	}

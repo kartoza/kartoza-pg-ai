@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+	"os"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -9,6 +11,23 @@ import (
 	"github.com/kartoza/kartoza-pg-ai/internal/config"
 	"github.com/kartoza/kartoza-pg-ai/internal/postgres"
 )
+
+// debugLog writes debug info to a file for troubleshooting
+func debugLog(msg string) {
+	f, err := os.OpenFile("/tmp/kartoza-pg-ai-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	f.WriteString(time.Now().Format("15:04:05") + " " + msg + "\n")
+}
+
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
 
 // Screen represents the current screen being displayed
 type Screen int
@@ -53,13 +72,26 @@ type blinkTickMsg time.Time
 // goToMenuMsg indicates request to return to menu screen
 type goToMenuMsg struct{}
 
+// goToHistoryMsg indicates request to go to history screen
+type goToHistoryMsg struct{}
+
 // NewAppModel creates a new application model
 func NewAppModel() *AppModel {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(ColorOrange)
 
-	cfg, _ := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		debugLog("NewAppModel: error loading config: " + err.Error())
+	} else {
+		debugLog(fmt.Sprintf("NewAppModel: config loaded, %d cached schemas", len(cfg.CachedSchemas)))
+		for k, v := range cfg.CachedSchemas {
+			if v != nil {
+				debugLog(fmt.Sprintf("NewAppModel: cached schema '%s' with %d tables", k, len(v.Tables)))
+			}
+		}
+	}
 
 	return &AppModel{
 		screen:   ScreenMenu,
@@ -176,6 +208,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		GlobalAppState.ActiveService = msg.service.Name
 		GlobalAppState.Status = "Connected"
 
+		debugLog("serviceSelectedMsg: selected service " + msg.service.Name)
+
 		// Save to config
 		if m.cfg != nil {
 			m.cfg.ActiveService = msg.service.Name
@@ -183,7 +217,15 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Load or use cached schema
+		debugLog("serviceSelectedMsg: checking cache validity for " + msg.service.Name)
+		if m.cfg != nil {
+			debugLog("serviceSelectedMsg: cfg not nil, CachedSchemas len: " + fmt.Sprintf("%d", len(m.cfg.CachedSchemas)))
+			for k := range m.cfg.CachedSchemas {
+				debugLog("serviceSelectedMsg: cached service: " + k)
+			}
+		}
 		if m.cfg != nil && m.cfg.IsSchemaCacheValid(msg.service.Name) {
+			debugLog("serviceSelectedMsg: cache IS valid, using cached schema")
 			m.activeSchema = m.cfg.CachedSchemas[msg.service.Name]
 			GlobalAppState.SchemaLoaded = true
 			GlobalAppState.TablesCount = len(m.activeSchema.Tables)
@@ -208,6 +250,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Need to harvest schema - show harvest screen with progress bar
+		debugLog("serviceSelectedMsg: cache NOT valid, starting harvest")
 		m.screen = ScreenHarvest
 		m.harvest = NewHarvestModel(msg.service)
 		m.harvest.width = m.width
@@ -215,17 +258,30 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.harvest.Init()
 
 	case schemaLoadedMsg:
+		debugLog("schemaLoadedMsg received")
 		m.loading = false
 		if msg.err == nil && msg.schema != nil {
+			debugLog(fmt.Sprintf("schema is valid, tables: %d", len(msg.schema.Tables)))
 			m.activeSchema = msg.schema
 			GlobalAppState.SchemaLoaded = true
 			GlobalAppState.TablesCount = len(msg.schema.Tables)
 			GlobalAppState.HasPostGIS = msg.schema.HasPostGIS
 
 			// Cache the schema
+			debugLog("cfg nil? " + boolStr(m.cfg == nil) + ", activeService nil? " + boolStr(m.activeService == nil))
 			if m.cfg != nil && m.activeService != nil {
+				debugLog("Caching schema for service: " + m.activeService.Name)
+				// Ensure CachedSchemas map is initialized
+				if m.cfg.CachedSchemas == nil {
+					m.cfg.CachedSchemas = make(map[string]*config.SchemaCache)
+					debugLog("Initialized CachedSchemas map")
+				}
 				m.cfg.CachedSchemas[m.activeService.Name] = msg.schema
-				m.cfg.Save()
+				if err := m.cfg.Save(); err != nil {
+					debugLog("Save error: " + err.Error())
+				} else {
+					debugLog("Save successful")
+				}
 			}
 
 			// Check if we have a pending screen to navigate to
@@ -280,6 +336,18 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case goToMenuMsg:
 		// Return to menu screen
 		m.screen = ScreenMenu
+		return m, nil
+
+	case goToHistoryMsg:
+		// Go to history screen (requires active service)
+		if m.activeService != nil {
+			m.screen = ScreenHistory
+			m.history = NewHistoryModel(m.activeService.Name)
+			m.history.width = m.width
+			m.history.height = m.height
+			return m, m.history.Init()
+		}
+		// No active service - stay on current screen
 		return m, nil
 
 	case editServiceMsg:
@@ -448,7 +516,7 @@ func truncate(s string, maxLen int) string {
 // RunApp runs the main TUI application
 func RunApp() error {
 	app := NewAppModel()
-	p := tea.NewProgram(app, tea.WithAltScreen())
+	p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := p.Run()
 	return err
 }

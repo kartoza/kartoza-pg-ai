@@ -1,6 +1,9 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -23,6 +26,7 @@ type Settings struct {
 	LLMModelPath      string `json:"llm_model_path"`
 	SchemaCacheTTLMin int    `json:"schema_cache_ttl_min"`
 	VimModeEnabled    bool   `json:"vim_mode_enabled"`
+	NeuralNetEnabled  bool   `json:"neural_net_enabled"`
 }
 
 // SchemaCache represents cached database schema
@@ -79,14 +83,16 @@ type FunctionInfo struct {
 
 // QueryHistoryEntry represents a query in history
 type QueryHistoryEntry struct {
-	Timestamp      time.Time `json:"timestamp"`
-	NaturalQuery   string    `json:"natural_query"`
-	GeneratedSQL   string    `json:"generated_sql"`
-	ServiceName    string    `json:"service_name"`
-	RowsAffected   int       `json:"rows_affected"`
-	ExecutionTime  float64   `json:"execution_time_ms"`
-	Success        bool      `json:"success"`
-	ErrorMessage   string    `json:"error_message,omitempty"`
+	Timestamp       time.Time `json:"timestamp"`
+	NaturalQuery    string    `json:"natural_query"`
+	GeneratedSQL    string    `json:"generated_sql"`
+	ServiceName     string    `json:"service_name"`
+	RowsAffected    int       `json:"rows_affected"`
+	ExecutionTime   float64   `json:"execution_time_ms"`
+	Success         bool      `json:"success"`
+	ErrorMessage    string    `json:"error_message,omitempty"`
+	HasGeometry     bool      `json:"has_geometry,omitempty"`
+	GeometryImageID string    `json:"geometry_image_id,omitempty"` // Filename of cached PNG image
 }
 
 // DefaultConfig returns a new config with default values
@@ -102,6 +108,7 @@ func DefaultConfig() *Config {
 			LLMModelPath:      "",
 			SchemaCacheTTLMin: 1440, // 24 hours
 			VimModeEnabled:    true,
+			NeuralNetEnabled:  true, // Enable NN by default
 		},
 	}
 }
@@ -186,13 +193,86 @@ func (c *Config) AddQueryToHistory(entry QueryHistoryEntry) {
 	}
 }
 
-// IsSchemaCacheValid checks if the cached schema is still valid
+// IsSchemaCacheValid checks if the cached schema exists (no TTL - persistent until manual refresh)
 func (c *Config) IsSchemaCacheValid(serviceName string) bool {
-	cache, exists := c.CachedSchemas[serviceName]
-	if !exists {
-		return false
+	_, exists := c.CachedSchemas[serviceName]
+	return exists
+}
+
+// GeometryImagesDir returns the directory path for cached geometry images
+func GeometryImagesDir() (string, error) {
+	dir, err := ConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "geometry_images"), nil
+}
+
+// SaveGeometryImage saves a base64-encoded PNG image to the cache folder
+// Returns the image ID (filename without extension)
+func SaveGeometryImage(base64Data string) (string, error) {
+	if base64Data == "" {
+		return "", nil
 	}
 
-	ttl := time.Duration(c.Settings.SchemaCacheTTLMin) * time.Minute
-	return time.Since(cache.CachedAt) < ttl
+	// Decode base64 to get raw PNG data
+	pngData, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return "", err
+	}
+
+	// Generate ID from hash of the image data
+	hash := sha256.Sum256(pngData)
+	imageID := hex.EncodeToString(hash[:8]) // Use first 8 bytes for shorter ID
+
+	// Ensure directory exists
+	dir, err := GeometryImagesDir()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", err
+	}
+
+	// Write the file
+	filePath := filepath.Join(dir, imageID+".png")
+	if err := os.WriteFile(filePath, pngData, 0644); err != nil {
+		return "", err
+	}
+
+	return imageID, nil
+}
+
+// LoadGeometryImage loads a geometry image and returns base64-encoded data
+func LoadGeometryImage(imageID string) (string, error) {
+	if imageID == "" {
+		return "", nil
+	}
+
+	dir, err := GeometryImagesDir()
+	if err != nil {
+		return "", err
+	}
+
+	filePath := filepath.Join(dir, imageID+".png")
+	pngData, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", err
+	}
+
+	return base64.StdEncoding.EncodeToString(pngData), nil
+}
+
+// GeometryImagePath returns the full path to a geometry image file
+func GeometryImagePath(imageID string) (string, error) {
+	if imageID == "" {
+		return "", nil
+	}
+
+	dir, err := GeometryImagesDir()
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(dir, imageID+".png"), nil
 }

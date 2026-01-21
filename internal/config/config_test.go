@@ -134,14 +134,13 @@ func TestHistoryTrimming(t *testing.T) {
 
 func TestIsSchemaCacheValid(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Settings.SchemaCacheTTLMin = 60 // 1 hour
 
 	// No cache should be invalid
 	if cfg.IsSchemaCacheValid("nonexistent") {
 		t.Error("expected false for nonexistent cache")
 	}
 
-	// Add fresh cache
+	// Add cache - should be valid (persistent, no TTL)
 	cfg.CachedSchemas["test"] = &SchemaCache{
 		ServiceName: "test",
 		CachedAt:    time.Now(),
@@ -149,18 +148,18 @@ func TestIsSchemaCacheValid(t *testing.T) {
 	}
 
 	if !cfg.IsSchemaCacheValid("test") {
-		t.Error("expected fresh cache to be valid")
+		t.Error("expected cache to be valid")
 	}
 
-	// Add old cache
+	// Even old cache should be valid (persistent until manual refresh)
 	cfg.CachedSchemas["old"] = &SchemaCache{
 		ServiceName: "old",
 		CachedAt:    time.Now().Add(-2 * time.Hour),
 		Tables:      []TableInfo{},
 	}
 
-	if cfg.IsSchemaCacheValid("old") {
-		t.Error("expected old cache to be invalid")
+	if !cfg.IsSchemaCacheValid("old") {
+		t.Error("expected old cache to still be valid (persistent mode)")
 	}
 }
 

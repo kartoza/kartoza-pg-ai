@@ -11,12 +11,14 @@ import (
 
 // HistoryModel represents the query history screen
 type HistoryModel struct {
-	width        int
-	height       int
-	entries      []config.QueryHistoryEntry
-	selectedItem int
-	serviceName  string
-	cfg          *config.Config
+	width         int
+	height        int
+	entries       []config.QueryHistoryEntry
+	selectedItem  int
+	serviceName   string
+	cfg           *config.Config
+	showingImage  bool   // Whether we're currently showing an image
+	currentImage  string // Kitty graphics escape sequence for current image
 }
 
 // rerunQueryMsg indicates user wants to rerun a query
@@ -60,6 +62,13 @@ func (m *HistoryModel) Update(msg tea.Msg) (*HistoryModel, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// If showing image, any key closes it
+		if m.showingImage {
+			m.showingImage = false
+			m.currentImage = ""
+			return m, nil
+		}
+
 		switch {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
 			return m, func() tea.Msg {
@@ -105,6 +114,21 @@ func (m *HistoryModel) Update(msg tea.Msg) (*HistoryModel, tea.Cmd) {
 				}
 			}
 			return m, nil
+
+		case key.Matches(msg, key.NewBinding(key.WithKeys("v"))):
+			// View geometry image if available
+			if len(m.entries) > 0 && m.selectedItem < len(m.entries) {
+				entry := m.entries[m.selectedItem]
+				if entry.HasGeometry && entry.GeometryImageID != "" {
+					// Load the image and convert to Kitty graphics
+					base64Data, err := config.LoadGeometryImage(entry.GeometryImageID)
+					if err == nil && base64Data != "" {
+						m.currentImage = Base64ToKittyGraphics(base64Data)
+						m.showingImage = true
+					}
+				}
+			}
+			return m, nil
 		}
 	}
 
@@ -136,12 +160,44 @@ func (m *HistoryModel) View() string {
 		return ""
 	}
 
+	// If showing image, display it full screen
+	if m.showingImage && m.currentImage != "" {
+		return m.renderImageView()
+	}
+
 	header := RenderHeader("Query History - " + m.serviceName)
 	content := m.renderContent()
-	helpText := "↑/k: up • ↓/j: down • enter: rerun • d: delete • esc: back • ctrl+c: quit"
+	helpText := "↑/k: up • ↓/j: down • enter: rerun • v: view image • d: delete • esc: back"
 	footer := RenderHelpFooter(helpText, m.width)
 
 	return LayoutWithHeaderFooter(header, content, footer, m.width, m.height)
+}
+
+func (m *HistoryModel) renderImageView() string {
+	header := RenderHeader("Geometry Preview")
+
+	// Center the image with a label
+	imageLabel := lipgloss.NewStyle().
+		Foreground(ColorOrange).
+		Bold(true).
+		Render("🗺️  Query Result Geometry")
+
+	content := lipgloss.JoinVertical(lipgloss.Center,
+		imageLabel,
+		"",
+		m.currentImage,
+	)
+
+	centeredContent := lipgloss.NewStyle().
+		Width(m.width - 10).
+		Height(m.height - 10).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(content)
+
+	helpText := "Press any key to close"
+	footer := RenderHelpFooter(helpText, m.width)
+
+	return LayoutWithHeaderFooter(header, centeredContent, footer, m.width, m.height)
 }
 
 func (m *HistoryModel) renderContent() string {
@@ -161,13 +217,15 @@ func (m *HistoryModel) renderContent() string {
 		Foreground(ColorOrange).
 		Bold(true)
 
-	// Build table header
+	// Build table header (added 📷 column for geometry indicator)
 	headerLine := borderStyle.Render("┌") +
+		borderStyle.Render(repeatChar("─", 3)) +
+		borderStyle.Render("┬") +
 		borderStyle.Render(repeatChar("─", 3)) +
 		borderStyle.Render("┬") +
 		borderStyle.Render(repeatChar("─", 18)) +
 		borderStyle.Render("┬") +
-		borderStyle.Render(repeatChar("─", 45)) +
+		borderStyle.Render(repeatChar("─", 42)) +
 		borderStyle.Render("┬") +
 		borderStyle.Render(repeatChar("─", 8)) +
 		borderStyle.Render("┐")
@@ -175,9 +233,11 @@ func (m *HistoryModel) renderContent() string {
 	headerContent := borderStyle.Render("│") +
 		headerStyle.Render(padRight(" ", 3)) +
 		borderStyle.Render("│") +
+		headerStyle.Render(padRight(" 📷", 3)) +
+		borderStyle.Render("│") +
 		headerStyle.Render(padRight(" Time", 18)) +
 		borderStyle.Render("│") +
-		headerStyle.Render(padRight(" Query", 45)) +
+		headerStyle.Render(padRight(" Query", 42)) +
 		borderStyle.Render("│") +
 		headerStyle.Render(padRight(" Rows", 8)) +
 		borderStyle.Render("│")
@@ -185,9 +245,11 @@ func (m *HistoryModel) renderContent() string {
 	separatorLine := borderStyle.Render("├") +
 		borderStyle.Render(repeatChar("─", 3)) +
 		borderStyle.Render("┼") +
+		borderStyle.Render(repeatChar("─", 3)) +
+		borderStyle.Render("┼") +
 		borderStyle.Render(repeatChar("─", 18)) +
 		borderStyle.Render("┼") +
-		borderStyle.Render(repeatChar("─", 45)) +
+		borderStyle.Render(repeatChar("─", 42)) +
 		borderStyle.Render("┼") +
 		borderStyle.Render(repeatChar("─", 8)) +
 		borderStyle.Render("┤")
@@ -229,6 +291,14 @@ func (m *HistoryModel) renderContent() string {
 		// Build first cell: selector + status icon
 		firstCell := selector + statusIcon + " "
 
+		// Geometry indicator
+		var geomCell string
+		if entry.HasGeometry && entry.GeometryImageID != "" {
+			geomCell = lipgloss.NewStyle().Foreground(ColorCyan).Render(" 🗺️")
+		} else {
+			geomCell = "   "
+		}
+
 		// Query style
 		queryStyle := lipgloss.NewStyle().Foreground(ColorWhite)
 		if isSelected {
@@ -241,9 +311,11 @@ func (m *HistoryModel) renderContent() string {
 		row := borderStyle.Render("│") +
 			firstCell +
 			borderStyle.Render("│") +
+			geomCell +
+			borderStyle.Render("│") +
 			lipgloss.NewStyle().Foreground(ColorGray).Render(padRight(" "+timeStr, 18)) +
 			borderStyle.Render("│") +
-			queryStyle.Render(padRight(" "+truncateStr(entry.NaturalQuery, 43), 45)) +
+			queryStyle.Render(padRight(" "+truncateStr(entry.NaturalQuery, 40), 42)) +
 			borderStyle.Render("│") +
 			lipgloss.NewStyle().Foreground(ColorBlue).Render(padRight(" "+rowsStr, 8)) +
 			borderStyle.Render("│")
@@ -255,9 +327,11 @@ func (m *HistoryModel) renderContent() string {
 	footerLine := borderStyle.Render("└") +
 		borderStyle.Render(repeatChar("─", 3)) +
 		borderStyle.Render("┴") +
+		borderStyle.Render(repeatChar("─", 3)) +
+		borderStyle.Render("┴") +
 		borderStyle.Render(repeatChar("─", 18)) +
 		borderStyle.Render("┴") +
-		borderStyle.Render(repeatChar("─", 45)) +
+		borderStyle.Render(repeatChar("─", 42)) +
 		borderStyle.Render("┴") +
 		borderStyle.Render(repeatChar("─", 8)) +
 		borderStyle.Render("┘")
@@ -268,7 +342,7 @@ func (m *HistoryModel) renderContent() string {
 	legendStyle := lipgloss.NewStyle().
 		Foreground(ColorGray).
 		Align(lipgloss.Center)
-	rows = append(rows, legendStyle.Render("● success  ○ failed"))
+	rows = append(rows, legendStyle.Render("● success  ○ failed  🗺️ has geometry (v to view)"))
 
 	// Show details of selected entry
 	if m.selectedItem < len(m.entries) {
@@ -282,13 +356,21 @@ func (m *HistoryModel) renderContent() string {
 		sqlStyle := lipgloss.NewStyle().Foreground(ColorCyan)
 		labelStyle := lipgloss.NewStyle().Foreground(ColorGray)
 
-		details := lipgloss.JoinVertical(lipgloss.Left,
+		detailParts := []string{
 			labelStyle.Render("Generated SQL:"),
 			sqlStyle.Render(entry.GeneratedSQL),
 			"",
 			labelStyle.Render(fmt.Sprintf("Execution time: %.2fms", entry.ExecutionTime)),
-		)
+		}
 
+		// Add geometry info if available
+		if entry.HasGeometry && entry.GeometryImageID != "" {
+			geomStyle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
+			detailParts = append(detailParts, "")
+			detailParts = append(detailParts, geomStyle.Render("🗺️  Geometry image available - press 'v' to view"))
+		}
+
+		details := lipgloss.JoinVertical(lipgloss.Left, detailParts...)
 		rows = append(rows, detailBox.Render(details))
 	}
 

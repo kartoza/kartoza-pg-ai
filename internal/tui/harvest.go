@@ -77,12 +77,17 @@ func (m *HarvestModel) Init() tea.Cmd {
 	)
 }
 
+// harvestCompleteMsg signals that harvesting is done (channel closed)
+type harvestCompleteMsg struct{}
+
 // listenForProgress listens for progress updates from the harvest goroutine
 func (m *HarvestModel) listenForProgress() tea.Cmd {
 	return func() tea.Msg {
 		msg, ok := <-m.harvestChan
 		if !ok {
-			return nil
+			// Channel closed - signal that progress listening is done
+			// The schemaLoadedMsg will be sent separately by startHarvest
+			return harvestCompleteMsg{}
 		}
 		return msg
 	}
@@ -91,11 +96,14 @@ func (m *HarvestModel) listenForProgress() tea.Cmd {
 // startHarvest starts the schema harvesting process
 func (m *HarvestModel) startHarvest() tea.Cmd {
 	return func() tea.Msg {
+		debugLog("startHarvest: connecting to database")
 		db, err := m.service.Connect()
 		if err != nil {
+			debugLog("startHarvest: connection error: " + err.Error())
 			return schemaLoadedMsg{err: err}
 		}
 		defer db.Close()
+		debugLog("startHarvest: connected, creating harvester")
 
 		harvester := postgres.NewSchemaHarvester(db)
 
@@ -143,8 +151,18 @@ func (m *HarvestModel) startHarvest() tea.Cmd {
 			}
 		})
 
+		debugLog("startHarvest: starting harvest for " + m.service.Name)
 		schema, err := harvester.Harvest(m.service.Name)
+		debugLog("startHarvest: harvest returned, closing channel")
 		close(m.harvestChan)
+
+		if err != nil {
+			debugLog("startHarvest: harvest error: " + err.Error())
+		} else {
+			debugLog(fmt.Sprintf("startHarvest: harvest complete, %d tables, %d views, %d functions",
+				len(schema.Tables), len(schema.Views), len(schema.Functions)))
+		}
+		debugLog("startHarvest: returning schemaLoadedMsg")
 		return schemaLoadedMsg{schema: schema, err: err}
 	}
 }
@@ -189,6 +207,25 @@ func (m *HarvestModel) Update(msg tea.Msg) (*HarvestModel, tea.Cmd) {
 
 		// Continue listening for more progress
 		return m, m.listenForProgress()
+
+	case harvestCompleteMsg:
+		// Channel closed - progress listening is done
+		// The schemaLoadedMsg should arrive shortly from startHarvest
+		debugLog("harvestCompleteMsg received, waiting for schemaLoadedMsg")
+		return m, nil
+
+	case schemaLoadedMsg:
+		// Harvest complete - mark as done and pass message through
+		m.done = true
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			m.schema = msg.schema
+		}
+		// Return the message so it propagates to AppModel
+		return m, func() tea.Msg {
+			return msg
+		}
 
 	case progress.FrameMsg:
 		progressModel, cmd := m.progress.Update(msg)
